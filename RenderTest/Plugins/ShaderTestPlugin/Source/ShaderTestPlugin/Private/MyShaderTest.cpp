@@ -17,6 +17,7 @@
 #include "Engine/Classes/Engine/Texture.h"
 #include "RenderCore/Public/UniformBuffer.h"
 #include "RHI/Public/RHIResources.h"
+#include "MyComputeShader.h"
 #include "RHICommandList.h"
 
 //#include "RenderCore/Public/RenderResource.h"
@@ -136,84 +137,6 @@ public:
 IMPLEMENT_SHADER_TYPE(, FShaderTestVS, TEXT("/Plugin/ShaderTestPlugin/Private/MyShader.usf"), TEXT("MainVS"), SF_Vertex)
 IMPLEMENT_SHADER_TYPE(, FShaderTestPS, TEXT("/Plugin/ShaderTestPlugin/Private/MyShader.usf"), TEXT("MainPS"), SF_Pixel)
 
-static void DrawTestShaderRenderTarget_RenderThread(
-	FRHICommandListImmediate& RHICmdList,
-	FTextureRenderTargetResource* OutputRenderTargetResource,
-	ERHIFeatureLevel::Type FeatureLevel,
-	FName TextureRenderTargetName,
-	FLinearColor MyColor,
-	//FRHITexture* MyTexture
-	FTextureRHIParamRef MyTexture,
-	FMyColorUniform ColorUniformBuffer
-)
-{
-	check(IsInRenderingThread());
-
-#if WANTS_DRAW_MESH_EVENTS
-	FString EventName;
-	TextureRenderTargetName.ToString(EventName);
-	/*
-	   在UE4中插入Event主要是通过调用SCOPED_DRAW_EVENT、SCOPED_CONDITIONAL_DRAW_EVENT等宏来构造一个
-	   TDrawEvent<TRHICmdList>对象并调用Start方法，然后在对象析构时调用其Stop方法
-	*/
-	SCOPED_DRAW_EVENTF(RHICmdList, SceneCapture, TEXT("ShaderTest %s"), *EventName);  
-#else  
-	SCOPED_DRAW_EVENT(RHICmdList, DrawTestShaderRenderTarget_RenderThread);
-#endif  
-
-	//设置渲染目标    //这他妈也废除了
-	/*SetRenderTarget(
-		RHICmdList,
-		OutputRenderTargetResource->GetRenderTargetTexture(),
-		FTextureRHIRef(),
-		ESimpleRenderTargetMode::EUninitializedColorAndDepth,
-		FExclusiveDepthStencil::DepthNop_StencilNop
-	);*/
-	//用以下代码来替换
-	FRHITexture2D* RenderTargetTexture = OutputRenderTargetResource->GetRenderTargetTexture();
-	RHICmdList.TransitionResource(EResourceTransitionAccess::EWritable, RenderTargetTexture);
-	FRHIRenderPassInfo RPInfo(RenderTargetTexture, ERenderTargetActions::DontLoad_Store, OutputRenderTargetResource->TextureRHI);
-	RHICmdList.BeginRenderPass(RPInfo, TEXT("DrawTestShader"));
-	{
-		FIntPoint DisplacementMapResolution(OutputRenderTargetResource->GetSizeX(), OutputRenderTargetResource->GetSizeY());
-
-		// Update viewport.
-		//RHICmdList.SetViewport(0, 0, 0.f,DisplacementMapResolution.X, DisplacementMapResolution.Y, 1.f);
-
-		TShaderMap<FGlobalShaderType>* GlobalShaderMap = GetGlobalShaderMap(FeatureLevel);
-		TShaderMapRef<FShaderTestVS> VertexShader(GlobalShaderMap);
-		TShaderMapRef<FShaderTestPS> PixelShader(GlobalShaderMap);
-
-		//添加自定义Shader输入结构
-		FMyTextureVertexDeclaration VertexDeclar;
-		VertexDeclar.InitRHI();
-
-		// Set the graphic pipeline state.  
-		FGraphicsPipelineStateInitializer GraphicsPSOInit;
-		RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-		GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
-		GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
-		GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
-		GraphicsPSOInit.PrimitiveType = PT_TriangleStrip;
-		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = VertexDeclar.VertexDeclarationRHI;// GetVertexDeclarationFVector4();
-		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
-		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
-
-		//RHICmdList.SetViewport(0, 0, 0.f,OutputRenderTargetResource->GetSizeX(), OutputRenderTargetResource->GetSizeY(), 1.f);
-		PixelShader->SetParameters(RHICmdList, MyColor , MyTexture , ColorUniformBuffer);
-
-		// Draw grid.
-		//uint32 PrimitiveCount = 32 * 16 * 2;
-		//RHICmdList.DrawPrimitive(0, PrimitiveCount, 1);
-		//上面的写法，会按照三角形的方式拉伸
-		RHICmdList.SetStreamSource(0, VertexDeclar.VertexBufferRHI, 0);
-		RHICmdList.DrawPrimitive(0,2,1);
-	}
-	RHICmdList.EndRenderPass();
-
-}
-
 void UTestShaderBlueprintLibrary::DrawTestShaderRenderTarget(UTextureRenderTarget2D* OutputRenderTarget,
 	AActor* Ac, FLinearColor MyColor, UTexture* MyTexture , FMyColorUniform ColorUniformBuffer
 )
@@ -302,5 +225,141 @@ void UTestShaderBlueprintLibrary::WriteTexture(UTexture* MyTexture, AActor* self
 
 }
 #pragma optimize("" , on)
+
+
+
+/* 使用ComputeShade计算并且将结果输出 */
+void UTestShaderBlueprintLibrary::UseTestComputeShader(UTextureRenderTarget2D* OutputRenderTarget, AActor* selfref)
+{
+	check(IsInGameThread());
+
+	FTextureRenderTargetResource* TextureRenderTargetResource = OutputRenderTarget->GameThread_GetRenderTargetResource();
+	UWorld* World = selfref->GetWorld();
+	ERHIFeatureLevel::Type FeatureLevel = World->Scene->GetFeatureLevel();
+	FName TextureRenderTargetName = OutputRenderTarget->GetFName();
+
+	ENQUEUE_RENDER_COMMAND(CaptureCommand)(
+		[TextureRenderTargetResource, FeatureLevel , TextureRenderTargetName](FRHICommandListImmediate& RHICmdList)
+	{
+		UseComputeShader_RenderThread(RHICmdList, TextureRenderTargetResource, FeatureLevel , TextureRenderTargetName);
+	}
+	);
+
+}
+
+
+static void DrawTestShaderRenderTarget_RenderThread(
+	FRHICommandListImmediate& RHICmdList,
+	FTextureRenderTargetResource* OutputRenderTargetResource,
+	ERHIFeatureLevel::Type FeatureLevel,
+	FName TextureRenderTargetName,
+	FLinearColor MyColor,
+	//FRHITexture* MyTexture
+	FTextureRHIParamRef MyTexture,
+	FMyColorUniform ColorUniformBuffer
+)
+{
+	check(IsInRenderingThread());
+
+#if WANTS_DRAW_MESH_EVENTS
+	FString EventName;
+	TextureRenderTargetName.ToString(EventName);
+	/*
+	   在UE4中插入Event主要是通过调用SCOPED_DRAW_EVENT、SCOPED_CONDITIONAL_DRAW_EVENT等宏来构造一个
+	   TDrawEvent<TRHICmdList>对象并调用Start方法，然后在对象析构时调用其Stop方法
+	*/
+	SCOPED_DRAW_EVENTF(RHICmdList, SceneCapture, TEXT("ShaderTest %s"), *EventName);
+#else  
+	SCOPED_DRAW_EVENT(RHICmdList, DrawTestShaderRenderTarget_RenderThread);
+#endif  
+
+	//设置渲染目标    //这他妈也废除了
+	/*SetRenderTarget(
+		RHICmdList,
+		OutputRenderTargetResource->GetRenderTargetTexture(),
+		FTextureRHIRef(),
+		ESimpleRenderTargetMode::EUninitializedColorAndDepth,
+		FExclusiveDepthStencil::DepthNop_StencilNop
+	);*/
+	//用以下代码来替换
+	FRHITexture2D* RenderTargetTexture = OutputRenderTargetResource->GetRenderTargetTexture();
+	RHICmdList.TransitionResource(EResourceTransitionAccess::EWritable, RenderTargetTexture);
+	FRHIRenderPassInfo RPInfo(RenderTargetTexture, ERenderTargetActions::DontLoad_Store, OutputRenderTargetResource->TextureRHI);
+	RHICmdList.BeginRenderPass(RPInfo, TEXT("DrawTestShader"));
+	{
+		FIntPoint DisplacementMapResolution(OutputRenderTargetResource->GetSizeX(), OutputRenderTargetResource->GetSizeY());
+
+		// Update viewport.
+		//RHICmdList.SetViewport(0, 0, 0.f,DisplacementMapResolution.X, DisplacementMapResolution.Y, 1.f);
+
+		TShaderMap<FGlobalShaderType>* GlobalShaderMap = GetGlobalShaderMap(FeatureLevel);
+		TShaderMapRef<FShaderTestVS> VertexShader(GlobalShaderMap);
+		TShaderMapRef<FShaderTestPS> PixelShader(GlobalShaderMap);
+
+		//添加自定义Shader输入结构
+		FMyTextureVertexDeclaration VertexDeclar;
+		VertexDeclar.InitRHI();
+
+		// Set the graphic pipeline state.  
+		FGraphicsPipelineStateInitializer GraphicsPSOInit;
+		RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+		GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+		GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
+		GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
+		GraphicsPSOInit.PrimitiveType = PT_TriangleStrip;
+		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = VertexDeclar.VertexDeclarationRHI;// GetVertexDeclarationFVector4();
+		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
+		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+
+		//RHICmdList.SetViewport(0, 0, 0.f,OutputRenderTargetResource->GetSizeX(), OutputRenderTargetResource->GetSizeY(), 1.f);
+		PixelShader->SetParameters(RHICmdList, MyColor, MyTexture, ColorUniformBuffer);
+
+		// Draw grid.
+		//uint32 PrimitiveCount = 32 * 16 * 2;
+		//RHICmdList.DrawPrimitive(0, PrimitiveCount, 1);
+		//上面的写法，会按照三角形的方式拉伸
+		RHICmdList.SetStreamSource(0, VertexDeclar.VertexBufferRHI, 0);
+		RHICmdList.DrawPrimitive(0, 2, 1);
+	}
+	RHICmdList.EndRenderPass();
+
+}
+
+/* 使用ComputeShade计算并且将结果输出 */
+//19.11.29 目前测试先把其中几个像素输出
+static void UseComputeShader_RenderThread(
+	FRHICommandListImmediate& RHICmdList,
+	FTextureRenderTargetResource* OutputRenderTargetResource,
+	ERHIFeatureLevel::Type FeatureLevel,
+	FName TextureRenderTargetName
+)
+{
+	check(IsInRenderingThread());
+
+	/*  先调用computeShader计算出要显示RenderTexture */
+	TShaderMapRef<FMyComputeShader> ComputeShader(GetGlobalShaderMap(FeatureLevel));
+	RHICmdList.SetComputeShader(ComputeShader->GetComputeShader());
+
+	int32 SizeX = OutputRenderTargetResource->GetSizeX();
+	int32 SizeY = OutputRenderTargetResource->GetSizeY();
+
+	//创建这个不知道是什么鬼的UAV
+
+	//FUnorderedAccessViewRHIRef TextureUAV = RHICreateUnorderedAccessView();
+	//ComputeShader->BindSurfaces(RHICmdList, TextureUAV);
+
+	/*
+	之所以调用*星号，是因为TShaderMapRef重载了！
+		FORCEINLINE ShaderType* operator*() const
+		{
+			return Shader;
+		}
+	*/
+	DispatchComputeShader(RHICmdList, *ComputeShader, 32, 32, 1);
+
+}
+
+
 
 #undef LOCTEXT_NAMESPACE  
