@@ -39,5 +39,5 @@ class UTestShaderBlueprintLibrary : public UBlueprintFunctionLibrary
 
 	/* 使用ComputeShade计算并且将结果输出 */
 	UFUNCTION(BlueprintCallable, Category = "TextureTestPlugin", meta = (WorldContext = "WorldContextObject"))
-	static void UseTestComputeShader(class UTextureRenderTarget2D* OutputRenderTarget, AActor* selfref);
+	static void UseTestComputeShader(class UTextureRenderTarget2D* OutputRenderTarget, AActor* selfref , FString SavePathName);
 };

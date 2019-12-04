@@ -41,14 +41,14 @@ public:
 
 	void BindSurfaces(FRHICommandList& RHICmdList, FUnorderedAccessViewRHIRef OutputSurfaceUAV)
 	{
-		FComputeShaderRHIParamRef ComputeShaderRHI = GetComputeShader();
+		FRHIComputeShader* ComputeShaderRHI = GetComputeShader();
 		if (OutPutTexture.IsBound())
 			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutPutTexture.GetBaseIndex(), OutputSurfaceUAV);
 	}
 
 	void UnbindBuffers(FRHICommandList& RHICmdList)
 	{
-		FComputeShaderRHIParamRef ComputeShaderRHI = GetComputeShader();
+		FRHIComputeShader* ComputeShaderRHI = GetComputeShader();
 		if (OutPutTexture.IsBound())
 			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutPutTexture.GetBaseIndex(), FUnorderedAccessViewRHIRef());
 	}

@@ -14,6 +14,9 @@
 #include "Public/StaticBoundShaderState.h" 
 #include "RHI/Public/RHIResources.h"
 #include "ShaderDeclar.h"
+#include "Runtime/Core/Public/Misc/FileHelper.h"
+#include "Runtime/Core/Public/HAL/FileManager.h"
+#include "Runtime/Core/Public/Misc/Paths.h"
 #include "Engine/Classes/Engine/Texture.h"
 #include "RenderCore/Public/UniformBuffer.h"
 #include "RHI/Public/RHIResources.h"
@@ -82,7 +85,7 @@ public:
 		return bShaderHasOutdatedParameters;
 	}
 
-	void SetParameters(FRHICommandListImmediate& RHICmdList, const FLinearColor &MyColor , FTextureRHIParamRef &MyTexture,
+	void SetParameters(FRHICommandListImmediate& RHICmdList, const FLinearColor &MyColor , FRHITexture* &MyTexture,
 		FMyColorUniform &ColorUniform
 		)// FRHITexture* MyTexture )
 	{
@@ -137,116 +140,6 @@ public:
 IMPLEMENT_SHADER_TYPE(, FShaderTestVS, TEXT("/Plugin/ShaderTestPlugin/Private/MyShader.usf"), TEXT("MainVS"), SF_Vertex)
 IMPLEMENT_SHADER_TYPE(, FShaderTestPS, TEXT("/Plugin/ShaderTestPlugin/Private/MyShader.usf"), TEXT("MainPS"), SF_Pixel)
 
-void UTestShaderBlueprintLibrary::DrawTestShaderRenderTarget(UTextureRenderTarget2D* OutputRenderTarget,
-	AActor* Ac, FLinearColor MyColor, UTexture* MyTexture , FMyColorUniform ColorUniformBuffer
-)
-{
-	check(IsInGameThread());
-
-	if (!OutputRenderTarget)
-	{
-		return;
-	}
-
-	if (MyTexture == nullptr)
-	{
-		return;
-	}
-
-	FTextureRenderTargetResource* TextureRenderTargetResource = OutputRenderTarget->GameThread_GetRenderTargetResource();
-	UWorld* World = Ac->GetWorld();
-	ERHIFeatureLevel::Type FeatureLevel = World->Scene->GetFeatureLevel();
-	FName TextureRenderTargetName = OutputRenderTarget->GetFName();
-	//FRHITexture* MyTextureRHI = MyTexture->TextureReference.TextureReferenceRHI;
-	FTextureRHIParamRef MyTextureRHI = MyTexture->TextureReference.TextureReferenceRHI;
-
-	ENQUEUE_RENDER_COMMAND(CaptureCommand)(
-		[TextureRenderTargetResource, FeatureLevel,TextureRenderTargetName ,MyColor , MyTextureRHI , ColorUniformBuffer](FRHICommandListImmediate& RHICmdList)
-	{
-		DrawTestShaderRenderTarget_RenderThread(RHICmdList, TextureRenderTargetResource, FeatureLevel, TextureRenderTargetName, MyColor , MyTextureRHI , ColorUniformBuffer);
-	}
-	);
-
-}
-
-//////////绘制图片等相关
-/* 向Texture2D写入内容,目前仅仅是替换图片资源并向其中写入数据 */
-#pragma optimize("" , off)
-void UTestShaderBlueprintLibrary::WriteTexture(UTexture* MyTexture, AActor* selfref)
-{
-	check(IsInGameThread());
-
-	if (MyTexture == nullptr || selfref == nullptr)
-	{
-		return;
-	}
-
-	//压缩设置，设置MINMAP等
-	MyTexture->CompressionSettings = TextureCompressionSettings::TC_VectorDisplacementmap;
-	MyTexture->MipGenSettings = TextureMipGenSettings::TMGS_NoMipmaps;
-	MyTexture->SRGB = false;
-	MyTexture->UpdateResource();
-
-	FTexturePlatformData* aaa = *MyTexture->GetRunningPlatformData();
-	FTexture2DMipMap &MinMap = aaa->Mips[0];
-	void* Data = MinMap.BulkData.Lock(LOCK_READ_WRITE);
-
-	int32 textureX = (*(MyTexture->GetRunningPlatformData()))->SizeX;
-	int32 textureY = (*(MyTexture->GetRunningPlatformData()))->SizeY;
-	TArray<FColor> colors;
-	//手动填充像素 好蠢。。只是填充一个颜色像素，不是ARGB填充还好一些
-	for (int32 x = 0; x < textureX * textureY; x++)
-	{
-		//在中间画个框
-		int32 cur_row = x % textureX;
-		int32 max_row = textureY / 2 + 10;
-		if (max_row > textureY)
-			max_row = textureY -1;
-		int32 min_row = textureY / 2 - 10;
-		if (min_row < 0)
-			min_row = 1;
-		if (cur_row <= max_row)
-			colors.Add(FColor::Red);
-		else
-			colors.Add(FColor::Green);
-	}
-
-	int32 ColorStride = (int32)(sizeof(uint8) * 4);
-
-	FMemory::Memcpy(
-		Data, colors.GetData(), ColorStride * textureX * textureY
-	);
-
-	MinMap.BulkData.Unlock();
-	//MyTexture->CompressionSettings = OldCompressionSettings;
-	//MyTexture->MipGenSettings = OldMipGenSettings;
-	//MyTexture->SRGB = OldSRGB;
-	MyTexture->UpdateResource();
-
-}
-#pragma optimize("" , on)
-
-
-
-/* 使用ComputeShade计算并且将结果输出 */
-void UTestShaderBlueprintLibrary::UseTestComputeShader(UTextureRenderTarget2D* OutputRenderTarget, AActor* selfref)
-{
-	check(IsInGameThread());
-
-	FTextureRenderTargetResource* TextureRenderTargetResource = OutputRenderTarget->GameThread_GetRenderTargetResource();
-	UWorld* World = selfref->GetWorld();
-	ERHIFeatureLevel::Type FeatureLevel = World->Scene->GetFeatureLevel();
-	FName TextureRenderTargetName = OutputRenderTarget->GetFName();
-
-	ENQUEUE_RENDER_COMMAND(CaptureCommand)(
-		[TextureRenderTargetResource, FeatureLevel , TextureRenderTargetName](FRHICommandListImmediate& RHICmdList)
-	{
-		UseComputeShader_RenderThread(RHICmdList, TextureRenderTargetResource, FeatureLevel , TextureRenderTargetName);
-	}
-	);
-
-}
-
 
 static void DrawTestShaderRenderTarget_RenderThread(
 	FRHICommandListImmediate& RHICmdList,
@@ -255,7 +148,7 @@ static void DrawTestShaderRenderTarget_RenderThread(
 	FName TextureRenderTargetName,
 	FLinearColor MyColor,
 	//FRHITexture* MyTexture
-	FTextureRHIParamRef MyTexture,
+	FRHITexture* MyTexture,
 	FMyColorUniform ColorUniformBuffer
 )
 {
@@ -326,13 +219,103 @@ static void DrawTestShaderRenderTarget_RenderThread(
 
 }
 
+void UTestShaderBlueprintLibrary::DrawTestShaderRenderTarget(UTextureRenderTarget2D* OutputRenderTarget,
+	AActor* Ac, FLinearColor MyColor, UTexture* MyTexture , FMyColorUniform ColorUniformBuffer
+)
+{
+	check(IsInGameThread());
+
+	if (!OutputRenderTarget)
+	{
+		return;
+	}
+
+	if (MyTexture == nullptr)
+	{
+		return;
+	}
+
+	FTextureRenderTargetResource* TextureRenderTargetResource = OutputRenderTarget->GameThread_GetRenderTargetResource();
+	UWorld* World = Ac->GetWorld();
+	ERHIFeatureLevel::Type FeatureLevel = World->Scene->GetFeatureLevel();
+	FName TextureRenderTargetName = OutputRenderTarget->GetFName();
+	//FRHITexture* MyTextureRHI = MyTexture->TextureReference.TextureReferenceRHI;
+	FRHITexture* MyTextureRHI = MyTexture->TextureReference.TextureReferenceRHI;
+
+	ENQUEUE_RENDER_COMMAND(CaptureCommand)(
+		[TextureRenderTargetResource, FeatureLevel,TextureRenderTargetName ,MyColor , MyTextureRHI , ColorUniformBuffer](FRHICommandListImmediate& RHICmdList)
+	{
+		DrawTestShaderRenderTarget_RenderThread(RHICmdList, TextureRenderTargetResource, FeatureLevel, TextureRenderTargetName, MyColor , MyTextureRHI , ColorUniformBuffer);
+	}
+	);
+
+}
+
+//////////绘制图片等相关
+/* 向Texture2D写入内容,目前仅仅是替换图片资源并向其中写入数据 */
+#pragma optimize("" , off)
+void UTestShaderBlueprintLibrary::WriteTexture(UTexture* MyTexture, AActor* selfref)
+{
+	check(IsInGameThread());
+
+	if (MyTexture == nullptr || selfref == nullptr)
+	{
+		return;
+	}
+
+	//压缩设置，设置MINMAP等
+	MyTexture->CompressionSettings = TextureCompressionSettings::TC_VectorDisplacementmap;
+	MyTexture->MipGenSettings = TextureMipGenSettings::TMGS_NoMipmaps;
+	MyTexture->SRGB = false;
+	MyTexture->UpdateResource();
+
+	FTexturePlatformData* aaa = *MyTexture->GetRunningPlatformData();
+	FTexture2DMipMap &MinMap = aaa->Mips[0];
+	void* Data = MinMap.BulkData.Lock(LOCK_READ_WRITE);
+
+	int32 textureX = (*(MyTexture->GetRunningPlatformData()))->SizeX;
+	int32 textureY = (*(MyTexture->GetRunningPlatformData()))->SizeY;
+	TArray<FColor> colors;
+	//手动填充像素 好蠢。。只是填充一个颜色像素，不是ARGB填充还好一些
+	for (int32 x = 0; x < textureX * textureY; x++)
+	{
+		//在中间画个框
+		int32 cur_row = x % textureX;
+		int32 max_row = textureY / 2 + 10;
+		if (max_row > textureY)
+			max_row = textureY -1;
+		int32 min_row = textureY / 2 - 10;
+		if (min_row < 0)
+			min_row = 1;
+		if (cur_row <= max_row)
+			colors.Add(FColor::Red);
+		else
+			colors.Add(FColor::Green);
+	}
+
+	int32 ColorStride = (int32)(sizeof(uint8) * 4);
+
+	FMemory::Memcpy(
+		Data, colors.GetData(), ColorStride * textureX * textureY
+	);
+
+	MinMap.BulkData.Unlock();
+	//MyTexture->CompressionSettings = OldCompressionSettings;
+	//MyTexture->MipGenSettings = OldMipGenSettings;
+	//MyTexture->SRGB = OldSRGB;
+	MyTexture->UpdateResource();
+
+}
+#pragma optimize("" , on)
+
 /* 使用ComputeShade计算并且将结果输出 */
 //19.11.29 目前测试先把其中几个像素输出
 static void UseComputeShader_RenderThread(
 	FRHICommandListImmediate& RHICmdList,
 	FTextureRenderTargetResource* OutputRenderTargetResource,
 	ERHIFeatureLevel::Type FeatureLevel,
-	FName TextureRenderTargetName
+	FName TextureRenderTargetName,
+	FString SavePathName
 )
 {
 	check(IsInRenderingThread());
@@ -344,10 +327,13 @@ static void UseComputeShader_RenderThread(
 	int32 SizeX = OutputRenderTargetResource->GetSizeX();
 	int32 SizeY = OutputRenderTargetResource->GetSizeY();
 
-	//创建这个不知道是什么鬼的UAV
-
-	//FUnorderedAccessViewRHIRef TextureUAV = RHICreateUnorderedAccessView();
-	//ComputeShader->BindSurfaces(RHICmdList, TextureUAV);
+	//创建一个UAV。视图接口指定管道在呈现期间可以访问的资源部分,UAV可以使用FRHITEXTURE来创建，所以先创建一个Texture
+	FRHIResourceCreateInfo CreateInfo;
+	/*typedef TRefCountPtr<FRHITexture2D> FTexture2DRHIRef; */
+	//FTexture2DRHIRef RHITexture = RHICreateTexture2D(SizeX,SizeY, PF_R32_UINT,1,1, TexCreate_ShaderResource | TexCreate_UAV, CreateInfo);
+	FTexture2DRHIRef RHITexture = RHICreateTexture2D(SizeX, SizeY, PF_A32B32G32R32F, 1, 1, TexCreate_ShaderResource | TexCreate_UAV, CreateInfo); //因为TexCreate_UAV格式说慎用
+	FUnorderedAccessViewRHIRef TextureUAV = RHICreateUnorderedAccessView(RHITexture);
+	ComputeShader->BindSurfaces(RHICmdList, TextureUAV);
 
 	/*
 	之所以调用*星号，是因为TShaderMapRef重载了！
@@ -356,7 +342,72 @@ static void UseComputeShader_RenderThread(
 			return Shader;
 		}
 	*/
-	DispatchComputeShader(RHICmdList, *ComputeShader, 32, 32, 1);
+	DispatchComputeShader(RHICmdList, *ComputeShader, SizeX/32, SizeY/32, 1);
+
+	ComputeShader->UnbindBuffers(RHICmdList);
+
+	//create a bitmap  
+	TArray<FColor> Bitmap;
+	uint32 Stride = 0;
+	//获取了指向资源地址的指针，取出指针指向的内容即为一个颜色代码，根据位运算获取ARGB的值
+	void* Data = RHICmdList.LockTexture2D(RHITexture, 0, EResourceLockMode::RLM_ReadOnly, Stride, false);
+	
+	char* CharData = (char*)Data;//如果不先转为Char会如何？因为要用步长来进行指针移动，所以我试试转成UINT32呢直接点
+	//遍历每一行每一列的颜色代码
+	for (uint32 row = 0; row < RHITexture->GetSizeY(); row++)
+	{
+		//行的指针
+		uint32 *RowPtr = (uint32*)CharData;
+
+		for (uint32 column = 0; column < RHITexture->GetSizeX(); column++)
+		{
+			//当前的颜色地址值
+			uint32 ColumnPtr = *RowPtr;
+
+			uint8 R = (ColumnPtr & 0x000000FF);
+			uint8 G = (ColumnPtr & 0x0000FF00) >> 8;
+			uint8 B = (ColumnPtr & 0x00FF0000) >> 16;
+			uint8 A = (ColumnPtr & 0xFF000000) >> 24;
+
+			Bitmap.Add(FColor(R, G, B, A));
+
+			RowPtr++;
+		}
+		CharData += Stride;
+	}
+
+	RHICmdList.UnlockTexture2D(RHITexture, 0, false);
+
+	//颜色我有了，现在试着把颜色输出到一张RenderMap
+	if (Bitmap.Num())
+	{
+		//IFileManager::Get().MakeDirectory(*FPaths::ScreenShotDir(), true);
+		const FString ComputeFileName(FPaths::ProjectContentDir() + SavePathName);
+
+		uint32 ExtendXWithMSAA = Bitmap.Num() / RHITexture->GetSizeY();  //其实我觉得，直接用GetSizeY应该是一样的
+
+		FFileHelper::CreateBitmap(*ComputeFileName, ExtendXWithMSAA, RHITexture->GetSizeY(), Bitmap.GetData());
+	}
+
+}
+
+
+/* 使用ComputeShade计算并且将结果输出 */
+void UTestShaderBlueprintLibrary::UseTestComputeShader(UTextureRenderTarget2D* OutputRenderTarget, AActor* selfref , FString SavePathName)
+{
+	check(IsInGameThread());
+
+	FTextureRenderTargetResource* TextureRenderTargetResource = OutputRenderTarget->GameThread_GetRenderTargetResource();
+	UWorld* World = selfref->GetWorld();
+	ERHIFeatureLevel::Type FeatureLevel = World->Scene->GetFeatureLevel();
+	FName TextureRenderTargetName = OutputRenderTarget->GetFName();
+
+	ENQUEUE_RENDER_COMMAND(CaptureCommand)(
+		[TextureRenderTargetResource, FeatureLevel, TextureRenderTargetName , SavePathName](FRHICommandListImmediate& RHICmdList)
+	{
+		UseComputeShader_RenderThread(RHICmdList, TextureRenderTargetResource, FeatureLevel, TextureRenderTargetName , SavePathName);
+	}
+	);
 
 }
 
