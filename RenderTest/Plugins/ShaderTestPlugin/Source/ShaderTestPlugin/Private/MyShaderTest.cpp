@@ -211,7 +211,7 @@ static void DrawTestShaderRenderTarget_RenderThread(
 		// Draw grid.
 		//uint32 PrimitiveCount = 32 * 16 * 2;
 		//RHICmdList.DrawPrimitive(0, PrimitiveCount, 1);
-		//上面的写法，会按照三角形的方式拉伸
+		//上面的写法，会按照三角形的方式拉伸   https://blog.csdn.net/ddupd/article/details/37600337  可以看看这个
 		RHICmdList.SetStreamSource(0, VertexDeclar.VertexBufferRHI, 0);
 		RHICmdList.DrawPrimitive(0, 2, 1);
 	}
